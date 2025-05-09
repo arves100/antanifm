@@ -13,14 +13,14 @@ include $(MAKEFILE_ROOT_DIR)/elf_rules
 # INCLUDES is a list of directories containing header files
 # SPECS is the directory containing the important build and link files
 #---------------------------------------------------------------------------------
-export TARGET		:=	minute
+export TARGET		:=	antanifm
 export BUILD		?=	debug
 
 R_SOURCES			:=	
-SOURCES				:=	source source/fatfs externals/inih
+SOURCES				:=	source source/lib source/lib/fatfs externals/inih
 
 R_INCLUDES			:=	
-INCLUDES 			:=	source source/fatfs externals/inih
+INCLUDES 			:=	source source/lib source/lib/fatfs externals/inih
 
 DATA				:=	
 
@@ -36,7 +36,6 @@ CFLAGS			:=	-g -std=c11 -Os \
 CFLAGS			+=	$(INCLUDE) -D_GNU_SOURCE -DCAN_HAZ_IRQ -fno-builtin-printf -Wno-nonnull -Werror=implicit -DNAND_WRITE_ENABLED
 
 CXXFLAGS		:=	$(CFLAGS) -fno-rtti -fno-exceptions
-
 ASFLAGS			:=	-g $(ARCH)
 LDFLAGS			 =	-g --specs=../stub.specs $(ARCH) -Wl,--gc-sections,-Map,$(TARGET).map \
 					-L$(DEVKITARM)/lib/gcc/arm-none-eabi/$(GCC_VERSION)/be -L$(DEVKITARM)/arm-none-eabi/lib/be \
@@ -122,7 +121,7 @@ DEPENDS		:=	$(OFILES:.o=.d)
 #---------------------------------------------------------------------------------
 ELFLOADER = $(ROOTDIR)/elfloader/elfloader.bin
 
-$(ROOTDIR)/fw.img: $(OUTPUT)-strip.elf $(ELFLOADER)
+$(ROOTDIR)/ios.img: $(OUTPUT)-strip.elf $(ELFLOADER)
 	@python3 $(ROOTDIR)/castify.py $(ELFLOADER) $< $@ false
 
 $(OUTPUT)-strip.elf: $(OUTPUT).elf
@@ -132,7 +131,6 @@ $(OUTPUT).elf: $(OFILES)
 
 $(ELFLOADER):
 	@$(MAKE) -C $(ROOTDIR)/elfloader
-
 
 -include $(DEPENDS)
 

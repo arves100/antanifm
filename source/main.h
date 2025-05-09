@@ -12,24 +12,18 @@
 #define _MAIN_H
 
 #include "types.h"
-#include "menu.h"
 
-#include "dump.h"
-#include "isfs.h"
-
-void main_quickboot_fw(void);
-void main_quickboot_patch(void);
-void main_boot_fw(void);
-void main_boot_ppc(void);
-void main_shutdown(void);
+// menu: main options
+void main_copy(void);
+void main_move(void);
+void main_delete(void);
 void main_reset(void);
-void main_reset_no_defuse(void);
-void main_reload(void);
+void main_shutdown(void);
 void main_credits(void);
-void main_get_crash(void);
-void main_reset_crash(void);
-void main_interactive_console(void);
 
-extern menu menu_main;
+// menu: disk options
+void disk_slc(void);
+void disk_sdmc(void);
+void disk_back(void);
 
 #endif
