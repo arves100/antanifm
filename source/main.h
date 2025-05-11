@@ -17,6 +17,9 @@
 void main_copy(void);
 void main_move(void);
 void main_delete(void);
+void main_copyfolder(void);
+void main_movefolder(void);
+void main_deletefolder(void);
 void main_reset(void);
 void main_shutdown(void);
 void main_credits(void);

@@ -90,6 +90,15 @@ char* pick_file(char* path, bool folderpick, char* filename_buf)
     if (ret != FR_OK)
         return NULL;
 
+    pick_strcpy(_picker.directory[0], "..");
+    _picker.directories = 1;
+
+    if (folderpick)
+    {
+        pick_strcpy(_picker.directory[1], ".");
+        _picker.directories++;
+    }
+
     /*
      * TODO: More than 256 files/directories, if needed.
      * Currently any more than that sucks up quite a bit
@@ -103,7 +112,7 @@ char* pick_file(char* path, bool folderpick, char* filename_buf)
         ret = f_readdir(&dir, &info);
 
         if (ret != FR_OK || info.fname[0] == 0) break;
-        if (info.fname[0] == '.' && info.fname[1] == '\0' && !folderpick) continue;
+        if (info.fname[0] == '.' && info.fname[1] == '\0') continue;
 
         filename = *info.lfname ? info.lfname : info.fname;
 
@@ -143,9 +152,6 @@ void picker_init(picker* new_picker)
     {
         u8 input = smc_get_events();
 
-        //TODO: There's no way to exit
-        //break;
-
         if(input & SMC_EJECT_BUTTON)
         {
             if(__picker->selected > __picker->directories - 1) // file
@@ -154,30 +160,35 @@ void picker_init(picker* new_picker)
             }
             else // directory
             {
-                // Throw the current directory on to our stack.
-                picker_chain[opened_pickers++] = __picker;
+                if (strcmp(__picker->directory[__picker->selected], ".") == 0 && __picker->folderpick)
+                {
+                    pick_sprintf(_filename, "%s/", __picker->path);
+                }
+                else if (strcmp(__picker->directory[__picker->selected], "..") == 0)
+                {
+                    if (opened_pickers < 1) // root picker
+                    {
+                        continue;
+                    }
 
-                pick_sprintf(_directory, "%s/%s", __picker->path, __picker->directory[__picker->selected]);
-                pick_file(_directory, __picker->folderpick, _filename);
-
-                // Has a file been selected yet? If not, we have to show the previous directory, user probably pressed B.
-                if(strlen(_filename) == 0)
                     picker_init(picker_chain[--opened_pickers]);
+                }
+                else
+                {
+                    // Throw the current directory on to our stack.
+                    picker_chain[opened_pickers++] = __picker;
+
+                    pick_sprintf(_directory, "%s/%s", __picker->path, __picker->directory[__picker->selected]);
+                    pick_file(_directory, __picker->folderpick, _filename);
+
+                    // Has a file been selected yet? If not, we have to show the previous directory, user probably pressed B.
+                    if(strlen(_filename) == 0)
+                        picker_init(picker_chain[--opened_pickers]);
+                }
             }
 
             break;
         }
-
-        //TODO: No way to select folders either...
-        /*else if(__picker->folderpick && (input & BUTTON_Y))
-        {
-            if(__picker->selected <= __picker->directories) // selected folder
-            {
-                pick_sprintf(_filename, "%s", __picker->path);
-            }
-
-            break;
-        }*/
 
         if(input & SMC_POWER_BUTTON) picker_next_selection();
 
@@ -191,22 +202,17 @@ void picker_print_filenames()
     char item_buffer[100] = {0};
 
     console_add_text(__picker->folderpick ? "Select a directory..." : "Select a file...");
-
-    //TODO: No way to select folders
-    /*if(__picker->folderpick)
-        console_add_text("[] Select current directory");*/
-
     console_add_text("");
 
     for(i = __picker->show_y; i < (MAX_LINES - 6) + __picker->show_y; i++)
     {
         if(i < __picker->directories)
         {
-            pick_snprintf(item_buffer, MAX_LINE_LENGTH, " %s/", __picker->directory[i]);
+            pick_snprintf(item_buffer, MAX_LINE_LENGTH, "  %s/ ", __picker->directory[i]);
         }
         else
         {
-            pick_snprintf(item_buffer, MAX_LINE_LENGTH, " %s", __picker->file[i - __picker->directories]);
+            pick_snprintf(item_buffer, MAX_LINE_LENGTH, "  %s ", __picker->file[i - __picker->directories]);
         }
         console_add_text(item_buffer);
     }
@@ -224,11 +230,14 @@ void picker_update()
         __picker->update_needed = false;
     }
 
-    int header_lines_skipped = __picker->folderpick? 3 : 2;
+    int header_lines_skipped = 2;
 
     // Update cursor.
     for(i = 0; i < (MAX_LINES - 6); i++)
+    {
         gfx_draw_string(GFX_DRC, i == __picker->selected - __picker->show_y ? ">" : " ", x + CHAR_WIDTH, (i+header_lines_skipped) * CHAR_WIDTH + y + CHAR_WIDTH * 2, GREEN);
+        gfx_draw_string(GFX_TV, i == __picker->selected - __picker->show_y ? ">" : " ", x + CHAR_WIDTH, (i+header_lines_skipped) * CHAR_WIDTH + y + CHAR_WIDTH * 2, GREEN);
+    }
 }
 
 void picker_next_selection()

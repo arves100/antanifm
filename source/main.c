@@ -17,8 +17,8 @@
 
 #include "main.h"
 #include "menu.h"
-#include "files.h"
 #include "filepicker.h"
+#include "dump.h"
 
 #include <gfx.h>
 #include <exi.h>
@@ -38,7 +38,9 @@
 #include <isfs.h>
 // c runtime
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 
 #define APP_NAME "Antani file manager"
 
@@ -54,26 +56,37 @@ enum e_action_mode
     ACTION_COPY,
     ACTION_MOVE,
     ACTION_DELETE,
+    ACTION_COPY_DIR,
+    ACTION_MOVE_DIR,
+    ACTION_DELETE_DIR,
 };
 
 enum e_diskround
 {
-    DISK_ROUND_COMPLETE,
-    DISK_ROUND_FAILED,
+    DISK_ROUND_EXIT,
     DISK_ROUND_ASK_DEST,
+    DISK_ROUND_EXIT_NO_WAIT,
 };
 
-static int action_mode = ACTION_COPY;
+typedef struct select_context
+{
+    char source_filename[_MAX_LFN + 1];
+    char dest_filename[_MAX_LFN + 1];
+    int action_mode;
+    bool dirpick_source;
+    bool dirpick_dest;
+} select_context;
+
 static int reset_mode = EXIT_MODE_CYCLE;
 static char filename_buf[1024] = {0};
 static bool display_inited = false;
 static int has_no_otp_bin = 0;
+static select_context global_context = {0};
 
 static void error_wait(char *message);
 static void enable_display(void);
-static const char* try_pick(const char *base);
-static int disk_round(const char *base);
-static void disk_bootstrap(const char *base);
+static int disk_round(const char *base, bool select_dir, select_context *ctx);
+static void disk_bootstrap(const char *base, select_context *ctx);
 
 static menu menu_main = {
     APP_NAME, // title
@@ -84,7 +97,10 @@ static menu menu_main = {
     {
         {"Copy file", &main_copy},
         {"Move file", &main_move},
-        {"Delete file", &main_delete}, // options
+        {"Delete file", &main_delete},
+        //{"Copy folder", &main_copyfolder}, // TODO: enable and test...
+        //{"Move folder", &main_movefolder},
+        //{"Delete folder", &main_deletefolder},
         {"Hardware reset", &main_reset},
         {"Power off", &main_shutdown},
         {"Credits", &main_credits},
@@ -133,15 +149,11 @@ u32 _main(void *base)
     int res = 0;
 
     (void)base;
-    gfx_init();
+
+    write32(LT_SRNPROT, 0x7BF);
     exi_init();
+
     printf("minute loading\n");
-
-    memset(&fd_source, 0, sizeof(fd_source));
-    memset(&fd_dest, 0, sizeof(fd_dest));
-
-    serial_force_terminate();
-    udelay(500);
 
     printf("Initializing exceptions...\n");
     exception_initialize();
@@ -165,6 +177,7 @@ u32 _main(void *base)
     res = ELM_Mount();
     if(res) {
         printf("Error while mounting SD card (%d).\n", res);
+        error_wait(NULL);
     }
 
     crypto_check_de_Fused();
@@ -199,12 +212,17 @@ u32 _main(void *base)
              seeprom.bc.sata_device != SATA_TYPE_GEN1HDD))
         smc_set_odd_power(false);
 
+    if(isfs_init(ISFSVOL_SLC) < 0)
+    {
+        error_wait("Error mounting SLC\n");
+    }
+
     enable_display();
     printf("Showing menu...\n");
 
     while (reset_mode == EXIT_MODE_CYCLE)
     {
-        file_clear();
+        memset(&global_context, 0, sizeof(global_context));
         menu_init(&menu_main);
     }
 
@@ -247,19 +265,49 @@ u32 _main(void *base)
 
 void main_copy(void)
 {
-    action_mode = ACTION_COPY;
+    global_context.action_mode = ACTION_COPY;
+    global_context.dirpick_source = false;
+    global_context.dirpick_dest = true;
     menu_init(&menu_devs);
 }
 
 void main_move(void)
 {
-    action_mode = ACTION_MOVE;
+    global_context.action_mode = ACTION_MOVE;
+    global_context.dirpick_source = false;
+    global_context.dirpick_dest = true;
     menu_init(&menu_devs);
 }
 
 void main_delete(void)
 {
-    action_mode = ACTION_DELETE;
+    global_context.action_mode = ACTION_DELETE;
+    global_context.dirpick_source = false;
+    global_context.dirpick_dest = false;
+    menu_init(&menu_devs);
+}
+
+void main_copyfolder(void)
+{
+    global_context.action_mode = ACTION_COPY_DIR;
+    global_context.dirpick_source = true;
+    global_context.dirpick_dest = true;
+    menu_init(&menu_devs);
+}
+
+void main_movefolder(void)
+{
+    global_context.action_mode = ACTION_MOVE_DIR;
+    global_context.dirpick_source = true;
+    global_context.dirpick_dest = true;
+    menu_init(&menu_devs);
+}
+
+void main_deletefolder(void)
+{
+    global_context.action_mode = ACTION_DELETE_DIR;
+    global_context.dirpick_source = true;
+    global_context.dirpick_dest = false;
     menu_init(&menu_devs);
 }
 
@@ -294,100 +342,39 @@ void main_credits(void)
     console_power_to_continue();
 }
 
-static const char* try_pick(const char *base)
+static int disk_round(const char *base, bool select_dir, select_context *ctx)
 {
-    const char* new_file = pick_file((char*)base, false, filename_buf);
-    if (new_file)
-    {
-        if (memcmp(base, new_file, strlen(base)) == 0)
-        {
-            return new_file;
-        }
-    }
-
-    return NULL;
-}
-
-static int disk_round(const char *base)
-{
-    const char* path;
-    int set_ok = 0;
-    int ret = DISK_ROUND_FAILED;
+    const char *path, *path2;
+    int ret = DISK_ROUND_EXIT;
+    int is_ok = 0;
 
     gfx_clear(GFX_ALL, BLACK);
 
-    path = try_pick(base);
+    path = pick_file((char*)base, select_dir, filename_buf);
 
     console_init();
 
     if (path)
     {
-        if (file_is_src())
+        if (ctx->source_filename[0] != '\0')
         {
-            if (file_set_dst(path))
+            path2 = get_file_name(ctx->source_filename);
+
+            if (path2 != NULL)
             {
-                set_ok = 1;
+                strncpy(ctx->dest_filename, path, _MAX_LFN);
+                strcat(ctx->dest_filename, path2);
+                is_ok = 1;
             }
             else
             {
-                error_wait("Cannot open destination file!\n");
+                printf("Cannot get destination path!\n");
             }
         }
         else
         {
-            if (file_set_src(path))
-            {
-                set_ok = 1;
-            }
-            else
-            {
-                error_wait("Cannot open source file!\n");
-            }
-        }
-
-        if (set_ok)
-        {
-            switch (action_mode)
-            {
-            case ACTION_DELETE:
-                printf("Are you sure you want to delete file %s?\n", file_get_src());
-                if (!console_abort_confirmation_power_no_eject_yes())
-                {
-                    printf("%s\n", file_action_delete() ? "Success!" : "Failed!");
-                    ret = DISK_ROUND_COMPLETE;
-                }
-                break;
-            case ACTION_COPY:
-                if (!file_is_dst())
-                {
-                    ret = DISK_ROUND_ASK_DEST;
-                }
-                else
-                {
-                    printf("Are you sure you want to copy file %s to %s?\n", file_get_src(), file_get_dst());
-                    if (!console_abort_confirmation_power_no_eject_yes())
-                    {
-                        printf("%s\n", file_action_copy() ? "Success!" : "Failed!");
-                        ret = DISK_ROUND_COMPLETE;
-                    }
-                }
-                break;
-            case ACTION_MOVE:
-                if (!file_is_dst())
-                {
-                    ret = DISK_ROUND_ASK_DEST;
-                }
-                else
-                {
-                    printf("Are you sure you want to move the file %s to %s?\n", file_get_src(), file_get_dst());
-                    if (!console_abort_confirmation_power_no_eject_yes())
-                    {
-                        printf("%s\n", file_action_move() ? "Success!" : "Failed!"); 
-                        ret = DISK_ROUND_COMPLETE;
-                    }
-                }
-                break;
-            }    
+            strncpy(ctx->source_filename, path, _MAX_LFN);
+            is_ok = 1;
         }
     }
     else
@@ -395,24 +382,142 @@ static int disk_round(const char *base)
         printf("Cannot open path %s\n", base);
     }
 
+    if (is_ok)
+    {
+        switch (ctx->action_mode)
+        {
+        case ACTION_DELETE:
+            printf("Are you sure you want to delete file %s?\n", ctx->source_filename);
+            if (!console_abort_confirmation_power_no_eject_yes())
+            {
+                if (delete_file(ctx->source_filename) >= 0)
+                {
+                    printf("Success!\n");
+                }
+                else
+                {
+                    printf("Failed: %s!\n", strerror(errno));
+                }
+            }
+            else
+            {
+                ret = DISK_ROUND_EXIT_NO_WAIT;
+            }
+            break;
+        case ACTION_COPY:
+            if (ctx->dest_filename[0] == '\0')
+            {
+                ret = DISK_ROUND_ASK_DEST;
+            }
+            else
+            {
+                if (strcmp(ctx->source_filename, ctx->dest_filename) == 0)
+                {
+                    printf("You cannot copy a file to the same directory where it exists!\n");
+                }
+                else
+                {
+                    ret = DISK_ROUND_EXIT_NO_WAIT;
+                    printf("Are you sure you want to copy file %s to %s?\n", ctx->source_filename, ctx->dest_filename);
+                    if (!console_abort_confirmation_power_no_eject_yes())
+                    {
+                        if (exist_file(ctx->dest_filename))
+                        {
+                            printf("The file %s already exists, do you want to replace it?\n", ctx->dest_filename);
+                            if (console_abort_confirmation_power_no_eject_yes())
+                            {
+                                is_ok = 0;
+                            }
+                        }
+    
+                        if (is_ok)
+                        {
+                            ret = DISK_ROUND_EXIT;
+                            if (copy_file(ctx->source_filename, ctx->dest_filename) >= 0)
+                            {
+                                printf("Success!\n");
+                            }
+                            else
+                            {
+                                printf("Failed: %s!\n", strerror(errno));
+                            }    
+                        }
+                    }    
+                }
+            }
+            break;
+        case ACTION_MOVE:
+            if (ctx->dest_filename[0] == '\0')
+            {
+                ret = DISK_ROUND_ASK_DEST;
+            }
+            else
+            {
+                if (strcmp(ctx->source_filename, ctx->dest_filename) == 0)
+                {
+                    printf("You cannot move a file to the same directory where it exists!\n");
+                }
+                else
+                {
+                    ret = DISK_ROUND_EXIT_NO_WAIT;
+                    printf("Are you sure you want to move the file %s to %s?\n", ctx->source_filename, ctx->dest_filename);
+                    if (!console_abort_confirmation_power_no_eject_yes())
+                    {
+                        if (exist_file(ctx->dest_filename))
+                        {
+                            printf("The file %s already exists, do you want to replace it?\n", ctx->dest_filename);
+                            if (console_abort_confirmation_power_no_eject_yes())
+                            {
+                                is_ok = 0;
+                            }
+                        }
+
+                        if (is_ok)
+                        {
+                            ret = DISK_ROUND_EXIT;
+                            if (copy_file(ctx->source_filename, ctx->dest_filename) >= 0)
+                            {
+                                if (delete_file(ctx->source_filename) >= 0)
+                                {
+                                    printf("Success!\n");
+                                }
+                                else
+                                {
+                                    printf("Deletion fail: %s!\n", strerror(errno));
+                                }
+                            }
+                            else
+                            {
+                                printf("Copy fail: %s!\n", strerror(errno));
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        default:
+            break;
+        }    
+    }
+
     return ret;
 }
 
-static void disk_bootstrap(const char *base)
+static void disk_bootstrap(const char *base, select_context *ctx)
 {
     int res;
     
     gfx_clear(GFX_ALL, BLACK);
-    res = disk_round(base);
+    res = disk_round(base, (ctx->source_filename[0] != '\0') ? ctx->dirpick_dest : ctx->dirpick_source, ctx);
 
-    if (res == DISK_ROUND_FAILED)
-    {
-        disk_back();
-    }
-    else if (res == DISK_ROUND_ASK_DEST)
+    if (res == DISK_ROUND_ASK_DEST)
     {
         gfx_clear(GFX_ALL, BLACK);
         menu_init(&menu_devs);
+    }
+    else if (res == DISK_ROUND_EXIT_NO_WAIT)
+    {
+        disk_back();
     }
     else
     {
@@ -423,12 +528,12 @@ static void disk_bootstrap(const char *base)
 
 void disk_slc(void)
 {
-    disk_bootstrap("slc:/");
+    disk_bootstrap("slc:/", &global_context);
 }
 
 void disk_sdmc(void)
 {
-    disk_bootstrap("sdmc:/");
+    disk_bootstrap("sdmc:/", &global_context);
 }
 
 void disk_back(void)
