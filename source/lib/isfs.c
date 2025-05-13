@@ -26,10 +26,11 @@
 #include "sdcard.h"
 #include "memory.h"
 #include "rednand.h"
+#include "console.h"
 
 #include "isfshax.h"
 
-// #define ISFS_DEBUG
+#define ISFS_DEBUG
 
 #ifdef ISFS_DEBUG
 #   define  ISFS_debug(f, arg...) printf("ISFS: " f, ##arg);
@@ -530,16 +531,24 @@ static isfs_fst* _isfs_find_fst(isfs_ctx* ctx, const char* path, void** parent){
         *parent = &root->sub;
     u16 next = root->sub;
     while(next!=0xFFFF){
-        ISFS_debug("remaining path: %s\n", path);
+        //ISFS_debug("remaining path: %s\n", path);
         isfs_fst* fst = &root[next];
-        while(*path== '/') path++;
-        const char* remaining = strchr(path, '/');
+        const char* remaining = NULL;
+
+        if (strcmp(path, "/") != 0)
+        {
+            while(*path== '/') path++;
+            remaining = strchr(path, '/');    
+        }
 
         size_t size = remaining ? remaining - path : strlen(path);
+        //ISFS_debug("remaining compute: %s size: %zu\n", remaining, size);
 
         while((remaining && _isfs_fst_is_file(fst)) // skip files
                 || (size < sizeof(fst->name) && fst->name[size]) //check if fst name length
                 || memcmp(path, fst->name, size)){ //check name
+            //ISFS_debug("current %s %zu %s %p %s\n", remaining, fst->name, size, path, fst->sib, fst->sib != 0xffff ? root[fst->sib].name : NULL);
+        
             if(fst->sib == 0xFFFF)
                 return NULL;
             if(parent)
@@ -883,14 +892,29 @@ int isfs_read(isfs_file* file, void* buffer, size_t size, size_t* bytes_read)
 
 int isfs_diropen(isfs_dir* dir, const char* path)
 {
+    /*printf("hello %s %p\n", path, dir);
+    console_power_to_continue();*/
+
     if(!dir || !path) return -1;
 
     isfs_ctx* ctx = NULL;
     path = _isfs_do_volume(path, &ctx);
+
+    /*printf("ctx is %p\n", ctx);
+    console_power_to_continue();*/
+
     if(!ctx) return -2;
 
     isfs_fst* fst = _isfs_find_fst(ctx, path, NULL);
+
+    /*printf("fst is %p\n", fst);
+    console_power_to_continue();*/
+
     if(!fst) return -3;
+
+    /*printf("fst is dir: %d, sub: %d\n", _isfs_fst_is_dir(fst), fst->sub);
+    console_power_to_continue();*/
+
 
     if(!_isfs_fst_is_dir(fst)) return -4;
     if(fst->sub == 0xFFFF) return -2;
@@ -901,6 +925,9 @@ int isfs_diropen(isfs_dir* dir, const char* path)
     dir->volume = ctx->volume;
     dir->dir = fst;
     dir->child = &root[fst->sub];
+
+    /*printf("hello, dir is ok!\n");
+    console_power_to_continue();*/
 
     return 0;
 }

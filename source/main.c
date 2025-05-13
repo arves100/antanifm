@@ -150,6 +150,7 @@ u32 _main(void *base)
 
     (void)base;
 
+
     write32(LT_SRNPROT, 0x7BF);
     exi_init();
 
@@ -347,39 +348,48 @@ static int disk_round(const char *base, bool select_dir, select_context *ctx)
     const char *path, *path2;
     int ret = DISK_ROUND_EXIT;
     int is_ok = 0;
+    int errnox;
 
     gfx_clear(GFX_ALL, BLACK);
 
     path = pick_file((char*)base, select_dir, filename_buf);
+    errnox = errno;
 
     console_init();
 
     if (path)
     {
-        if (ctx->source_filename[0] != '\0')
+        if (path[0] != '\0')
         {
-            path2 = get_file_name(ctx->source_filename);
-
-            if (path2 != NULL)
+            if (ctx->source_filename[0] != '\0')
             {
-                strncpy(ctx->dest_filename, path, _MAX_LFN);
-                strcat(ctx->dest_filename, path2);
-                is_ok = 1;
+                path2 = get_file_name(ctx->source_filename);
+    
+                if (path2 != NULL)
+                {
+                    strncpy(ctx->dest_filename, path, _MAX_LFN);
+                    strcat(ctx->dest_filename, path2);
+                    is_ok = 1;
+                }
+                else
+                {
+                    printf("Cannot get destination path!\n");
+                }
             }
             else
             {
-                printf("Cannot get destination path!\n");
-            }
+                strncpy(ctx->source_filename, path, _MAX_LFN);
+                is_ok = 1;
+            }    
         }
         else
         {
-            strncpy(ctx->source_filename, path, _MAX_LFN);
-            is_ok = 1;
+            ret = DISK_ROUND_EXIT_NO_WAIT;
         }
     }
     else
     {
-        printf("Cannot open path %s\n", base);
+        printf("Cannot open path: %s, error: %s\n", base, strerror(errnox));
     }
 
     if (is_ok)
@@ -528,7 +538,7 @@ static void disk_bootstrap(const char *base, select_context *ctx)
 
 void disk_slc(void)
 {
-    disk_bootstrap("slc:/", &global_context);
+    disk_bootstrap("slc:/sys", &global_context);
 }
 
 void disk_sdmc(void)

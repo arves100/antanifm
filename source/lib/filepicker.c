@@ -16,6 +16,8 @@
 #include "ff.h"
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <dirent.h>
 
 char *_filename;
 char _directory[_MAX_LFN + 1];
@@ -70,25 +72,20 @@ char *pick_strcpy(char *dest, char *src)
 
 char* pick_file(char* path, bool folderpick, char* filename_buf)
 {
-    char *filename;
     _filename = filename_buf;
 
     picker _picker = {{0}};
     pick_strcpy(_picker.path, path);
     _picker.folderpick = folderpick;
 
-    FDIR dir;
-    FILINFO info;
-    FRESULT ret;
+    DIR* dir;
+    struct dirent* info;
 
-    static char lfn[_MAX_LFN + 1];
-    info.lfname = lfn;
-    info.lfsize = sizeof(lfn);
+    dir = opendir(path);
 
-    ret = f_opendir(&dir, path);
-
-    if (ret != FR_OK)
+    if (dir == NULL) {
         return NULL;
+    }
 
     pick_strcpy(_picker.directory[0], "..");
     _picker.directories = 1;
@@ -109,25 +106,26 @@ char* pick_file(char* path, bool folderpick, char* filename_buf)
      */
     while(true)
     {
-        ret = f_readdir(&dir, &info);
+        info = readdir(dir);
 
-        if (ret != FR_OK || info.fname[0] == 0) break;
-        if (info.fname[0] == '.' && info.fname[1] == '\0') continue;
+        if (info == NULL || info->d_name[0] == 0) break;
+        if (info->d_name[0] == '.' && info->d_name[1] == '\0') continue;
+        if (info->d_name[0] == '.' && info->d_name[1] == '.' && info->d_name[2] == '\0') continue;
 
-        filename = *info.lfname ? info.lfname : info.fname;
-
-        if ((info.fattrib & AM_DIR) && _picker.directories < 255) // directory
+        if ((info->d_type == DT_DIR) && _picker.directories < 255) // directory
         {
-            pick_strcpy(_picker.directory[_picker.directories], filename);
+            pick_strcpy(_picker.directory[_picker.directories], info->d_name);
             _picker.directories++;
 
         }
         else if(_picker.files < 255 && !folderpick) // file
         {
-            pick_strcpy(_picker.file[_picker.files], filename);
+            pick_strcpy(_picker.file[_picker.files], info->d_name);
             _picker.files++;
         }
     }
+
+    closedir(dir);
 
     picker_init(&_picker);
 
@@ -168,7 +166,8 @@ void picker_init(picker* new_picker)
                 {
                     if (opened_pickers < 1) // root picker
                     {
-                        continue;
+                        _filename = "";
+                        break;
                     }
 
                     picker_init(picker_chain[--opened_pickers]);
